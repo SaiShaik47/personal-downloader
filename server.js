@@ -7,34 +7,14 @@ const os = require("os");
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-/**
- * Makes filename safe for HTTP headers + filesystems
- * Fixes: TypeError [ERR_INVALID_CHAR] in Content-Disposition
- */
-function safeHeaderFilename(name) {
-  let s = String(name || "file")
-    .replace(/[\r\n]/g, " ")          // remove newlines
-    .replace(/[\x00-\x1F\x7F]/g, "")  // remove control chars
-    .trim();
-
-  // replace risky characters
-  s = s.replace(/[<>:"/\\|?*]/g, "_");
-
-  // shorten
-  if (s.length > 120) s = s.slice(0, 120);
-
-  if (!s) s = "file";
-  return s;
-}
-
-// Simple health check
+// Health check
 app.get("/health", (req, res) => res.status(200).send("ok"));
 
-// Help page
+// Help page if no query params
 app.get("/", (req, res, next) => {
   if (req.query.url || req.query.key || req.query.format) return next();
 
-  res.setHeader("Content-Type", "text/plain");
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.send(
     [
       "Personal yt-dlp Downloader (MP4/MP3)",
@@ -46,46 +26,44 @@ app.get("/", (req, res, next) => {
       "Example:",
       "/?url=https://www.youtube.com/watch?v=VIDEO_ID&key=12345&format=mp3",
       "",
-      "Health check:",
+      "Health:",
       "/health"
     ].join("\n")
   );
 });
 
-// Download endpoint (same path "/")
+// Downloader (same "/")
 app.get("/", async (req, res) => {
   try {
     const url = String(req.query.url || "");
     const key = String(req.query.key || "");
     const format = String(req.query.format || "mp4").toLowerCase();
 
-    // 1) KEY must exist in Railway variables
+    // KEY must exist in Railway Variables
     if (!process.env.KEY) {
       return res.status(500).send("Server missing KEY variable in Railway.");
     }
 
-    // 2) Check key
+    // Check key
     if (key !== process.env.KEY) {
       return res.status(401).send("❌ WRONG KEY");
     }
 
-    // 3) Check URL
+    // Check URL
     if (!url.startsWith("http")) {
-      return res
-        .status(400)
-        .send("❌ Bad or missing url. Use ?url=https://...");
+      return res.status(400).send("❌ Bad or missing url. Use ?url=https://...");
     }
 
-    // 4) format: mp4/mp3
+    // Check format
     if (!["mp4", "mp3"].includes(format)) {
       return res.status(400).send("❌ format must be mp4 or mp3");
     }
 
-    // 5) Temp folder
+    // Temp folder
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ytdlp-"));
-    const outTemplate = path.join(tmpDir, "%(title)s.%(ext)s");
+    const outTemplate = path.join(tmpDir, "output.%(ext)s");
 
-    // 6) yt-dlp args
+    // yt-dlp args
     let args = [];
     let expectedExt = "";
 
@@ -116,24 +94,17 @@ app.get("/", async (req, res) => {
       ];
     }
 
-    // 7) Run yt-dlp
     const ytdlp = spawn("yt-dlp", args, { stdio: ["ignore", "ignore", "pipe"] });
 
     let errText = "";
     ytdlp.stderr.on("data", (d) => (errText += d.toString()));
 
-    // If client closes connection early, stop download + cleanup
     let cleaned = false;
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
-      try {
-        // stop yt-dlp if still running
-        ytdlp.kill("SIGKILL");
-      } catch {}
-      try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {}
+      try { ytdlp.kill("SIGKILL"); } catch {}
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
     };
 
     res.on("close", cleanup);
@@ -142,12 +113,10 @@ app.get("/", async (req, res) => {
     ytdlp.on("close", (code) => {
       if (code !== 0) {
         cleanup();
-        return res
-          .status(500)
-          .send("❌ Download failed:\n" + errText.slice(-1500));
+        return res.status(500).send("❌ Download failed:\n" + errText.slice(-1500));
       }
 
-      // 8) Find output file
+      // Find output file
       const files = fs.readdirSync(tmpDir);
       const picked = files.find((f) => f.toLowerCase().endsWith(expectedExt));
 
@@ -158,15 +127,11 @@ app.get("/", async (req, res) => {
 
       const filePath = path.join(tmpDir, picked);
 
-      // 9) SAFE filename for header (fixes your crash)
-      const cleanName = safeHeaderFilename(picked);
+      // ✅ SUPER SAFE filename (ASCII only) to avoid header crash forever
+      const downloadName = format === "mp4" ? "download.mp4" : "download.mp3";
 
-      // 10) Send file
-      res.setHeader("Content-Disposition", `attachment; filename="${cleanName}"`);
-      res.setHeader(
-        "Content-Type",
-        format === "mp4" ? "video/mp4" : "audio/mpeg"
-      );
+      res.setHeader("Content-Disposition", `attachment; filename="${downloadName}"`);
+      res.setHeader("Content-Type", format === "mp4" ? "video/mp4" : "audio/mpeg");
 
       const stream = fs.createReadStream(filePath);
       stream.pipe(res);
@@ -175,11 +140,11 @@ app.get("/", async (req, res) => {
       stream.on("error", cleanup);
     });
   } catch (e) {
-    return res.status(500).send("Server error: " + String(e.message || e));
+    res.status(500).send("Server error: " + String(e.message || e));
   }
 });
 
-// IMPORTANT: bind to 0.0.0.0 for Railway
+// Bind to 0.0.0.0 for Railway
 app.listen(PORT, "0.0.0.0", () => {
   console.log("Server running on port", PORT);
 });
