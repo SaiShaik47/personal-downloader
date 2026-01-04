@@ -18,6 +18,9 @@ app.get("/", (req, res) => {
       "/d?url=YOUTUBE_LINK&key=YOUR_KEY&format=mp4",
       "/d?url=YOUTUBE_LINK&key=YOUR_KEY&format=mp3",
       "",
+      "Optional quality filter (height in px, e.g. 720):",
+      "/d?url=YOUTUBE_LINK&key=YOUR_KEY&format=mp4&quality=720",
+      "",
       "Example:",
       "/d?url=https://www.youtube.com/watch?v=VIDEO_ID&key=12345&format=mp3",
       "",
@@ -28,10 +31,29 @@ app.get("/", (req, res) => {
 });
 
 // Direct download endpoint
+const buildFormatString = (format, quality) => {
+  if (format === "mp3") {
+    return null; // audio-only handled separately
+  }
+
+  // Prefer a specific height when provided, but still merge best video + audio.
+  if (quality) {
+    const h = Number(quality);
+    if (!Number.isNaN(h) && h > 0) {
+      // pick best video up to requested height, merged with best audio, fallback to best mp4
+      return `bv*[height<=${h}]+ba/b[height<=${h}]/best`; // b = merged format fallback
+    }
+  }
+
+  // default best available video+audio
+  return "bv*+ba/best";
+};
+
 app.get("/d", (req, res) => {
   const url = String(req.query.url || "");
   const key = String(req.query.key || "");
   const format = String(req.query.format || "mp4").toLowerCase();
+  const quality = req.query.quality;
 
   // KEY check
   if (!process.env.KEY) return res.status(500).send("Missing KEY in Railway Variables.");
@@ -66,7 +88,7 @@ app.get("/d", (req, res) => {
       : [
           "--no-playlist",
           "-f",
-          "bv*+ba/best",
+          buildFormatString(format, quality),
           "--merge-output-format",
           "mp4",
           "-o",
