@@ -24,6 +24,7 @@ app.get("/", (req, res) => {
       "Get direct media URLs (no download):",
       "/url?url=YOUTUBE_LINK&key=YOUR_KEY&format=mp4",
       "/url?url=YOUTUBE_LINK&key=YOUR_KEY&format=mp4&quality=720",
+      "Includes separate audio/video URLs plus a merged (progressive) link when available.",
       "",
       "Example:",
       "/d?url=https://www.youtube.com/watch?v=VIDEO_ID&key=12345&format=mp3",
@@ -103,6 +104,40 @@ const extractUrls = (info, format) => {
   }
 
   return [];
+};
+
+const pickMergedStream = (info, quality) => {
+  if (!Array.isArray(info?.formats)) return null;
+
+  const h = Number(quality);
+  const maxHeight = !Number.isNaN(h) && h > 0 ? h : null;
+
+  const progressive = info.formats.filter(
+    (f) => f.url && f.vcodec && f.vcodec !== "none" && f.acodec && f.acodec !== "none"
+  );
+
+  const heightMatch = progressive.filter((f) => (maxHeight ? f.height <= maxHeight : true));
+  const candidates = heightMatch.length ? heightMatch : progressive;
+
+  if (!candidates.length) return null;
+
+  const best = candidates.reduce((acc, cur) => {
+    if (!acc) return cur;
+    const accHeight = acc.height || 0;
+    const curHeight = cur.height || 0;
+    return curHeight > accHeight ? cur : acc;
+  }, null);
+
+  if (!best) return null;
+
+  return {
+    type: "merged",
+    url: best.url,
+    ext: best.ext,
+    height: best.height,
+    fps: best.fps,
+    formatId: best.format_id
+  };
 };
 
 app.get("/d", (req, res) => {
@@ -193,6 +228,7 @@ app.get("/url", async (req, res) => {
   try {
     const info = await runYtDlpJson(args);
     const urls = extractUrls(info, format);
+    const merged = format === "mp4" ? pickMergedStream(info, quality) : null;
 
     if (!urls.length) return res.status(500).send("❌ Could not resolve media URLs");
 
@@ -201,7 +237,8 @@ app.get("/url", async (req, res) => {
       webpage_url: info.webpage_url,
       format,
       quality: quality || "best",
-      urls
+      urls,
+      merged
     });
   } catch (e) {
     res.status(500).send(`❌ ${e.message}`);
